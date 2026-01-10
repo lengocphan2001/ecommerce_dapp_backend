@@ -1,12 +1,12 @@
 module.exports = {
   apps: [{
     name: 'ecommerce-backend',
-    script: './dist/main.js',
+    script: './dist/src/main.js',
     instances: 1,
     exec_mode: 'fork',
     env: {
       NODE_ENV: 'production',
-      PORT: process.env.PORT || 3002
+      PORT: process.env.PORT || 3000
     },
     error_file: './logs/err.log',
     out_file: './logs/out.log',
