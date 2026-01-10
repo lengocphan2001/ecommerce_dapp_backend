@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { AdminSeedService } from './common/seed/admin-seed.service';
+import { CommissionConfigService } from './admin/commission-config.service';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
@@ -67,6 +68,15 @@ async function bootstrap() {
     await adminSeedService.seed();
   } catch (error) {
     // eslint-disable-next-line no-console
+  }
+
+  // Initialize default commission configs
+  try {
+    const configService = app.get(CommissionConfigService);
+    await configService.initializeDefaults();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to initialize commission configs:', error);
   }
 
   // Default to 3002 to avoid clashing with:
