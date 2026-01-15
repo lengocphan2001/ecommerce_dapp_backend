@@ -1,13 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { google } from 'googleapis';
+import { JWT } from 'google-auth-library';
 import { Order } from '../order/entities/order.entity';
 import { User } from '../user/entities/user.entity';
 
 @Injectable()
 export class GoogleSheetsService {
   private readonly logger = new Logger(GoogleSheetsService.name);
-  private sheets: any;
+  private client: JWT | undefined;
   private spreadsheetId: string | undefined;
 
   constructor(private configService: ConfigService) {
@@ -16,77 +16,60 @@ export class GoogleSheetsService {
     const privateKey = this.configService.get<string>('GOOGLE_PRIVATE_KEY')?.replace(/\\n/g, '\n');
 
     if (this.spreadsheetId && clientEmail && privateKey) {
-      const auth = new google.auth.JWT({
+      this.client = new JWT({
         email: clientEmail,
         key: privateKey,
         scopes: ['https://www.googleapis.com/auth/spreadsheets'],
       });
-      this.sheets = google.sheets({ version: 'v4', auth });
-      this.logger.log('Google Sheets service initialized');
+      this.logger.log('Google Sheets service initialized (Lightweight mode)');
     } else {
       this.logger.warn('Google Sheets configuration missing. Service will not sync data.');
     }
   }
 
+  private async request(method: string, url: string, data?: any) {
+    if (!this.client) return null;
+    return this.client.request({
+      method,
+      url: `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}${url}`,
+      data,
+    });
+  }
+
   async syncOrder(order: Order, user?: User) {
-    if (!this.sheets || !this.spreadsheetId) return;
+    if (!this.client || !this.spreadsheetId) return;
 
     try {
       const headers = [
-        'Order ID',
-        'User ID',
-        'Username',
-        'Full Name',
-        'Total Amount',
-        'Status',
-        'Items',
-        'Shipping Address',
-        'Transaction Hash',
-        'Created At',
-        'Updated At',
+        'Order ID', 'User ID', 'Username', 'Full Name', 'Total Amount', 
+        'Status', 'Items', 'Shipping Address', 'Transaction Hash', 
+        'Created At', 'Updated At'
       ];
 
-      // Check if order exists in sheet to update or append
-      let response;
+      // Check if sheet exists
+      let response: any;
       try {
-        response = await this.sheets.spreadsheets.values.get({
-          spreadsheetId: this.spreadsheetId,
-          range: 'Orders!A:A',
-        });
-      } catch (error) {
-        // If sheet doesn't exist, create it
-        if (error.message.includes('range')) {
+        response = await this.request('GET', '/values/Orders!A:A');
+      } catch (error: any) {
+        if (error.message?.includes('range') || error.response?.status === 400) {
           this.logger.log('Orders sheet not found, creating it...');
-          await this.sheets.spreadsheets.batchUpdate({
-            spreadsheetId: this.spreadsheetId,
-            requestBody: {
-              requests: [{
-                addSheet: {
-                  properties: {
-                    title: 'Orders',
-                  },
-                },
-              }],
-            },
+          await this.request('POST', ':batchUpdate', {
+            requests: [{ addSheet: { properties: { title: 'Orders' } } }],
           });
+          // Refresh after create
+          response = await this.request('GET', '/values/Orders!A:A');
         } else {
           throw error;
         }
       }
 
-      const rows = response?.data?.values;
+      const rows = response?.data?.values || [];
       
-      // If sheet is empty or headers are missing, add headers
-      if (!rows || rows.length === 0) {
-        await this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.spreadsheetId,
-          range: 'Orders!A1',
-          valueInputOption: 'RAW',
-          requestBody: {
-            values: [headers],
-          },
+      // Add headers if empty
+      if (rows.length === 0) {
+        await this.request('POST', '/values/Orders!A1:append?valueInputOption=RAW', {
+          values: [headers],
         });
-        this.logger.log('Headers added to Google Sheets');
       }
 
       // Prepare data row
@@ -105,37 +88,22 @@ export class GoogleSheetsService {
         new Date().toISOString(),
       ];
 
-      let rowIndex = -1;
-      if (rows) {
-        rowIndex = rows.findIndex(r => r[0] === order.id);
-      }
+      const rowIndex = rows.findIndex((r: any) => r[0] === order.id);
 
       if (rowIndex !== -1) {
-        // Update existing row (index is 0-based, but sheet is 1-based)
-        const updateRange = `Orders!A${rowIndex + 1}:K${rowIndex + 1}`;
-        await this.sheets.spreadsheets.values.update({
-          spreadsheetId: this.spreadsheetId,
-          range: updateRange,
-          valueInputOption: 'RAW',
-          requestBody: {
-            values: [row],
-          },
+        const range = `Orders!A${rowIndex + 1}:K${rowIndex + 1}`;
+        await this.request('PUT', `/values/${range}?valueInputOption=RAW`, {
+          values: [row],
         });
         this.logger.log(`Order ${order.id} updated in Google Sheets`);
       } else {
-        // Append new row
-        await this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.spreadsheetId,
-          range: 'Orders!A:K',
-          valueInputOption: 'RAW',
-          requestBody: {
-            values: [row],
-          },
+        await this.request('POST', '/values/Orders!A:K:append?valueInputOption=RAW', {
+          values: [row],
         });
         this.logger.log(`Order ${order.id} appended to Google Sheets`);
       }
-    } catch (error) {
-      this.logger.error(`Failed to sync order ${order.id} to Google Sheets: ${error.message}`);
+    } catch (error: any) {
+      this.logger.error(`Failed to sync order ${order.id}: ${error.message}`);
     }
   }
 }
