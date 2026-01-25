@@ -183,6 +183,7 @@ export class CommissionService {
 
   /**
    * Cập nhật package type của user dựa trên tổng giá trị mua
+   * Nếu user đã đạt ngưỡng và đang có packageType = NONE, restore packageType khi tái tiêu dùng
    */
   private async updateUserPackage(user: User, orderAmount: number): Promise<void> {
     const newTotalPurchase = user.totalPurchaseAmount + orderAmount;
@@ -190,11 +191,22 @@ export class CommissionService {
     let newPackageType: 'NONE' | 'CTV' | 'NPP' = user.packageType;
 
     const nppConfig = await this.getConfig('NPP');
-    if (newTotalPurchase >= nppConfig.PACKAGE_VALUE) {
-      newPackageType = 'NPP';
+    const ctvConfig = await this.getConfig('CTV');
+    
+    // Nếu user đang có packageType = NONE và đã đạt ngưỡng, có thể là tái tiêu dùng
+    // Restore packageType dựa trên orderAmount
+    if (user.packageType === 'NONE' && user.totalCommissionReceived >= ctvConfig.RECONSUMPTION_THRESHOLD) {
+      // User đã đạt ngưỡng, nếu mua hàng với giá trị >= packageValue → restore packageType
+      if (orderAmount >= nppConfig.PACKAGE_VALUE) {
+        newPackageType = 'NPP';
+      } else if (orderAmount >= ctvConfig.PACKAGE_VALUE) {
+        newPackageType = 'CTV';
+      }
     } else {
-      const ctvConfig = await this.getConfig('CTV');
-      if (newTotalPurchase >= ctvConfig.PACKAGE_VALUE) {
+      // Logic bình thường: cập nhật packageType dựa trên tổng giá trị mua
+      if (newTotalPurchase >= nppConfig.PACKAGE_VALUE) {
+        newPackageType = 'NPP';
+      } else if (newTotalPurchase >= ctvConfig.PACKAGE_VALUE) {
         newPackageType = 'CTV';
       }
     }
@@ -204,6 +216,7 @@ export class CommissionService {
         packageType: newPackageType,
         totalPurchaseAmount: newTotalPurchase,
       });
+      this.logger.log(`User ${user.id} packageType updated from ${user.packageType} to ${newPackageType}`);
     } else {
       await this.userRepository.update(user.id, {
         totalPurchaseAmount: newTotalPurchase,
@@ -282,6 +295,20 @@ export class CommissionService {
           })
           .where("id = :id", { id: referrer.id })
           .execute();
+        
+        // Kiểm tra xem có đạt ngưỡng không, nếu có thì set packageType về NONE
+        const updatedReferrer = await this.userRepository.findOne({ where: { id: referrer.id } });
+        if (updatedReferrer) {
+          const newTotalCommission = updatedReferrer.totalCommissionReceived;
+          const threshold = config.RECONSUMPTION_THRESHOLD;
+          if (newTotalCommission >= threshold) {
+            // Đã đạt ngưỡng → set packageType về NONE
+            await this.userRepository.update(referrer.id, {
+              packageType: 'NONE',
+            });
+            this.logger.log(`User ${referrer.id} reached threshold ${threshold}, packageType set to NONE`);
+          }
+        }
       }
     } catch (error: any) {
       this.logger.error(`Error creating direct commission for referrer ${referrer.id}, buyer ${buyer.id}:`, error.stack || error.message);
@@ -418,6 +445,20 @@ export class CommissionService {
         })
         .where("id = :id", { id: ancestor.id })
         .execute();
+      
+      // Kiểm tra xem có đạt ngưỡng không, nếu có thì set packageType về NONE
+      const updatedAncestor = await this.userRepository.findOne({ where: { id: ancestor.id } });
+      if (updatedAncestor) {
+        const newTotalCommission = updatedAncestor.totalCommissionReceived;
+        const config = await this.getConfig(ancestor.packageType === 'NPP' ? 'NPP' : 'CTV');
+        if (newTotalCommission >= config.RECONSUMPTION_THRESHOLD) {
+          // Đã đạt ngưỡng → set packageType về NONE
+          await this.userRepository.update(ancestor.id, {
+            packageType: 'NONE',
+          });
+          this.logger.log(`User ${ancestor.id} reached threshold ${config.RECONSUMPTION_THRESHOLD}, packageType set to NONE`);
+        }
+      }
     }
   }
 
@@ -431,9 +472,12 @@ export class CommissionService {
    * - F2 của User A = các user ở cấp thứ 2 dưới A (con của F1)
    * - F3 của User A = các user ở cấp thứ 3 dưới A (con của F2)
    * 
-   * QUAN TRỌNG: Tính dựa trên team commission mà F1 nhận được, không phải buyer
-   * - Tìm parent trực tiếp của buyer (F1)
-   * - Nếu F1 nhận team commission → ancestors nhận management commission
+   * QUAN TRỌNG: Tính đệ quy - mỗi khi một user nhận commission (trừ DIRECT), 
+   * ancestors của user đó cũng nhận management commission từ commission đó
+   * - Tìm F1, F2, F3 của buyer
+   * - Tìm TẤT CẢ commission (GROUP, MILESTONE, ...) của F1/F2/F3 từ đơn hàng này
+   * - Với mỗi commission, tính management cho ancestors
+   * - Khi một user nhận management commission, tiếp tục tính management cho ancestors của user đó
    */
   private async calculateManagementCommission(
     order: Order,
@@ -443,24 +487,7 @@ export class CommissionService {
       return; // Buyer không có parent trong binary tree
     }
 
-    // Tìm hoa hồng nhóm mà parent trực tiếp (F1) nhận được từ đơn hàng này
-    // QUAN TRỌNG: Hoa hồng quản lý được tính dựa trên hoa hồng nhóm mà F1 nhận được
-    const f1GroupCommission = await this.commissionRepository.findOne({
-      where: {
-        userId: buyer.parentId, // F1 (parent trực tiếp)
-        orderId: order.id,
-        type: CommissionType.GROUP,
-      },
-    });
-
-    if (!f1GroupCommission) {
-      this.logger.debug(`F1 (parent ${buyer.parentId}) did not receive group commission, skipping management commission`);
-      return; // F1 không nhận hoa hồng nhóm từ đơn hàng này
-    }
-
-    this.logger.log(`[MANAGEMENT COMMISSION] F1 (${buyer.parentId}) received group commission: ${f1GroupCommission.amount}, calculating management commission for ancestors`);
-
-    // Lấy F1 (parent trực tiếp của buyer)
+    // Tìm F1, F2, F3 của buyer
     const f1 = await this.userRepository.findOne({
       where: { id: buyer.parentId },
     });
@@ -469,48 +496,129 @@ export class CommissionService {
       return;
     }
 
-    // Tìm tất cả ancestors của buyer trong binary tree
-    const ancestors = await this.getAncestors(buyer);
-    this.logger.log(`[MANAGEMENT COMMISSION] Found ${ancestors.length} ancestors for buyer ${buyer.id}, will check management commission for each`);
+    const f2 = f1.parentId ? await this.userRepository.findOne({
+      where: { id: f1.parentId },
+    }) : null;
+
+    const f3 = f2?.parentId ? await this.userRepository.findOne({
+      where: { id: f2.parentId },
+    }) : null;
+
+    // Tìm TẤT CẢ commission (trừ DIRECT và MANAGEMENT) của F1/F2/F3 từ đơn hàng này
+    // Các loại commission có thể tính management: GROUP, MILESTONE, ...
+    const eligibleTypes = [CommissionType.GROUP, CommissionType.MILESTONE];
+    
+    const allF1Commissions = await this.commissionRepository
+      .createQueryBuilder('commission')
+      .where('commission.userId = :userId', { userId: f1.id })
+      .andWhere('commission.orderId = :orderId', { orderId: order.id })
+      .andWhere('commission.type IN (:...types)', { types: eligibleTypes })
+      .getMany();
+
+    const allF2Commissions = f2 ? await this.commissionRepository
+      .createQueryBuilder('commission')
+      .where('commission.userId = :userId', { userId: f2.id })
+      .andWhere('commission.orderId = :orderId', { orderId: order.id })
+      .andWhere('commission.type IN (:...types)', { types: eligibleTypes })
+      .getMany() : [];
+
+    const allF3Commissions = f3 ? await this.commissionRepository
+      .createQueryBuilder('commission')
+      .where('commission.userId = :userId', { userId: f3.id })
+      .andWhere('commission.orderId = :orderId', { orderId: order.id })
+      .andWhere('commission.type IN (:...types)', { types: eligibleTypes })
+      .getMany() : [];
+
+    const allCommissions = [
+      ...allF1Commissions.map(c => ({ commission: c, user: f1, level: 1 })),
+      ...allF2Commissions.map(c => ({ commission: c, user: f2!, level: 2 })),
+      ...allF3Commissions.map(c => ({ commission: c, user: f3!, level: 3 })),
+    ];
+
+    if (allCommissions.length === 0) {
+      this.logger.debug(`[MANAGEMENT COMMISSION] No eligible commissions found for F1/F2/F3 from order ${order.id}, skipping management commission`);
+      return;
+    }
+
+    this.logger.log(`[MANAGEMENT COMMISSION] Found ${allCommissions.length} eligible commission(s) for F1/F2/F3, calculating management commission recursively`);
+
+    // Với mỗi commission của F1/F2/F3, tính management cho ancestors (đệ quy)
+    for (const { commission, user: commissionUser, level: commissionLevel } of allCommissions) {
+      this.logger.log(`[MANAGEMENT COMMISSION] Processing commission ${commission.id} (type: ${commission.type}, amount: ${commission.amount}) from F${commissionLevel} (${commissionUser.id})`);
+      
+      // Tính management commission đệ quy: với mỗi commission, tính management cho ancestors
+      // và tiếp tục tính management cho ancestors của những người nhận management
+      await this.calculateManagementForCommissionRecursive(
+        order,
+        commissionUser,
+        commission,
+        commissionLevel,
+        new Set<string>(), // Track processed users to avoid infinite loops
+      );
+    }
+  }
+
+  /**
+   * Tính management commission đệ quy cho một commission cụ thể
+   * - Tìm ancestors của commissionUser
+   * - Với mỗi ancestor, nếu commissionUser là F1/F2/F3 của ancestor, tính management
+   * - Nếu ancestor cũng nhận được management commission, tiếp tục tính cho ancestors của ancestor
+   */
+  private async calculateManagementForCommissionRecursive(
+    order: Order,
+    commissionUser: User,
+    sourceCommission: Commission,
+    commissionUserLevel: number, // F1/F2/F3 của buyer ban đầu
+    processedUsers: Set<string>, // Track để tránh vòng lặp vô hạn
+  ): Promise<void> {
+    // Tránh vòng lặp vô hạn
+    if (processedUsers.has(commissionUser.id)) {
+      this.logger.debug(`[MANAGEMENT COMMISSION] User ${commissionUser.id} already processed, skipping to avoid infinite loop`);
+      return;
+    }
+    processedUsers.add(commissionUser.id);
+
+    // Tìm tất cả ancestors của commissionUser
+    const ancestors = await this.getAncestors(commissionUser);
+    this.logger.log(`[MANAGEMENT COMMISSION] Found ${ancestors.length} ancestors for commissionUser ${commissionUser.id}, will check management commission for each`);
 
     if (ancestors.length === 0) {
-      this.logger.warn(`[MANAGEMENT COMMISSION] No ancestors found for buyer ${buyer.id}, cannot calculate management commission`);
+      return; // Không có ancestors, dừng đệ quy
     }
 
     for (const ancestor of ancestors) {
-      this.logger.log(`[MANAGEMENT COMMISSION] Processing ancestor ${ancestor.id} (packageType: ${ancestor.packageType})`);
+      this.logger.log(`[MANAGEMENT COMMISSION] Processing ancestor ${ancestor.id} (packageType: ${ancestor.packageType}) for commissionUser ${commissionUser.id}`);
       
       if (ancestor.packageType === 'NONE') {
         this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - packageType is NONE`);
-        continue; // Ancestor chưa có gói, không tính hoa hồng quản lý
+        continue;
       }
 
       // Kiểm tra tái tiêu dùng
       const canReceiveCommission = await this.checkReconsumption(ancestor);
       if (!canReceiveCommission) {
         this.logger.warn(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - cannot receive commission (reconsumption check failed)`);
-        continue; // Ancestor chưa đủ điều kiện tái tiêu dùng
+        continue;
       }
 
-      // Xác định F1 là F1/F2/F3 của ancestor như thế nào
-      // QUAN TRỌNG: Tính dựa trên F1, không phải buyer
-      const level = await this.getGenerationLevel(f1, ancestor);
-      this.logger.log(`[MANAGEMENT COMMISSION] F1 (${f1.id}) is F${level} of ancestor ${ancestor.id}`);
+      // Xác định commissionUser là F1/F2/F3 của ancestor như thế nào
+      const level = await this.getGenerationLevel(commissionUser, ancestor);
+      this.logger.log(`[MANAGEMENT COMMISSION] CommissionUser ${commissionUser.id} (F${commissionUserLevel} of buyer) is F${level} of ancestor ${ancestor.id}`);
 
       if (level === null || level > 3) {
-        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - F1 is not F1/F2/F3 (level: ${level})`);
-        continue; // F1 không phải F1/F2/F3 của ancestor, hoặc vượt quá F3
+        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - commissionUser is not F1/F2/F3 (level: ${level})`);
+        continue;
       }
 
       // CTV chỉ nhận hoa hồng quản lý từ F1
       if (ancestor.packageType === 'CTV' && level !== 1) {
-        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - CTV only receives from F1, but F1 is F${level}`);
+        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - CTV only receives from F1, but commissionUser is F${level}`);
         continue;
       }
 
       // NPP nhận hoa hồng quản lý từ F1, F2, F3
       if (ancestor.packageType === 'NPP' && level > 3) {
-        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - NPP only receives from F1/F2/F3, but F1 is F${level}`);
+        this.logger.debug(`[MANAGEMENT COMMISSION] Skipping ancestor ${ancestor.id} - NPP only receives from F1/F2/F3, but commissionUser is F${level}`);
         continue;
       }
 
@@ -523,17 +631,39 @@ export class CommissionService {
         continue;
       }
 
-      // Tính hoa hồng quản lý dựa trên team commission mà F1 nhận được
-      this.logger.log(`[MANAGEMENT COMMISSION] F1 (${f1.id}) is F${level} of ancestor ${ancestor.id}, calculating management commission based on F1's group commission: ${f1GroupCommission.amount}, status: ${canReceiveCommission ? 'PENDING' : 'BLOCKED'}`);
+      // Tính hoa hồng quản lý dựa trên sourceCommission
+      this.logger.log(`[MANAGEMENT COMMISSION] Calculating management commission for ancestor ${ancestor.id} based on commission ${sourceCommission.id} (type: ${sourceCommission.type}, amount: ${sourceCommission.amount}) from commissionUser ${commissionUser.id}`);
       
-      await this.calculateManagementForLevel(
+      const createdManagementCommission = await this.calculateManagementForLevel(
         order,
-        f1, 
-        ancestor,
+        commissionUser, 
+        freshAncestor,
         level,
-        f1GroupCommission.amount,
+        sourceCommission.amount,
         canReceiveCommission ? CommissionStatus.PENDING : CommissionStatus.BLOCKED
       );
+
+      // QUAN TRỌNG: Nếu ancestor nhận được management commission, tiếp tục tính management cho ancestors của ancestor
+      // Chỉ tiếp tục nếu management commission được tạo thành công và có status PENDING
+      if (createdManagementCommission && canReceiveCommission && createdManagementCommission.status === CommissionStatus.PENDING) {
+        this.logger.log(`[MANAGEMENT COMMISSION] Ancestor ${ancestor.id} received management commission ${createdManagementCommission.id}, continuing recursively`);
+        
+        // Reload ancestor để có data mới nhất
+        const updatedAncestor = await this.userRepository.findOne({
+          where: { id: ancestor.id },
+        });
+        
+        if (updatedAncestor) {
+          // Tiếp tục tính management cho ancestors của ancestor (đệ quy)
+          await this.calculateManagementForCommissionRecursive(
+            order,
+            updatedAncestor,
+            createdManagementCommission,
+            level, // level của ancestor so với ancestor của nó
+            processedUsers, // Pass cùng Set để tránh vòng lặp
+          );
+        }
+      }
     }
   }
 
@@ -565,6 +695,7 @@ export class CommissionService {
   /**
    * Tính hoa hồng quản lý cho một cấp độ cụ thể
    * Note: Tái tiêu dùng đã được kiểm tra ở calculateManagementCommission, không cần kiểm tra lại ở đây
+   * @returns Commission đã tạo, hoặc null nếu không tạo được
    */
   private async calculateManagementForLevel(
     order: Order,
@@ -573,7 +704,7 @@ export class CommissionService {
     level: number,
     groupCommissionAmount: number,
     status: CommissionStatus,
-  ): Promise<void> {
+  ): Promise<Commission | null> {
     let rate: number;
     if (manager.packageType === 'CTV') {
       const ctvConfig = await this.getConfig('CTV');
@@ -583,7 +714,7 @@ export class CommissionService {
       const fKey = `F${level}` as 'F1' | 'F2' | 'F3';
       rate = nppConfig.MANAGEMENT_RATES[fKey] || 0;
     } else {
-      return;
+      return null;
     }
 
     // Tính hoa hồng quản lý dựa trên hoa hồng nhóm mà F1/F2/F3 nhận được
@@ -612,18 +743,34 @@ export class CommissionService {
         })
         .where("id = :id", { id: manager.id })
         .execute();
+      
+      // Kiểm tra xem có đạt ngưỡng không, nếu có thì set packageType về NONE
+      const updatedManager = await this.userRepository.findOne({ where: { id: manager.id } });
+      if (updatedManager) {
+        const newTotalCommission = updatedManager.totalCommissionReceived;
+        const config = await this.getConfig(manager.packageType === 'NPP' ? 'NPP' : 'CTV');
+        if (newTotalCommission >= config.RECONSUMPTION_THRESHOLD) {
+          // Đã đạt ngưỡng → set packageType về NONE
+          await this.userRepository.update(manager.id, {
+            packageType: 'NONE',
+          });
+          this.logger.log(`User ${manager.id} reached threshold ${config.RECONSUMPTION_THRESHOLD}, packageType set to NONE`);
+        }
+      }
     }
+
+    return commission;
   }
 
   /**
    * Kiểm tra điều kiện tái tiêu dùng
    * Trả về true nếu có thể nhận hoa hồng, false nếu cần tái tiêu dùng
    * 
-   * Logic:
+   * Logic mới (đơn giản hóa):
    * - Nếu chưa đạt ngưỡng hoa hồng → có thể nhận hoa hồng bình thường
-   * - Nếu đã đạt ngưỡng → phải kiểm tra tái tiêu dùng
-   *   - Đã đủ tái tiêu dùng → có thể nhận hoa hồng
-   *   - Chưa đủ tái tiêu dùng → không thể nhận hoa hồng
+   * - Nếu đã đạt ngưỡng → phải mua hàng với giá trị >= packageValue để tiếp tục nhận hoa hồng
+   *   - Nếu đã mua hàng với giá trị >= packageValue sau khi đạt ngưỡng → có thể nhận hoa hồng
+   *   - Nếu chưa mua → không thể nhận hoa hồng (packageType sẽ bị set về NONE)
    * 
    * QUAN TRỌNG: Chỉ tính các commission (direct, group, management), KHÔNG tính milestone
    */
@@ -637,7 +784,7 @@ export class CommissionService {
     );
 
     const threshold = config.RECONSUMPTION_THRESHOLD;
-    const required = config.RECONSUMPTION_REQUIRED;
+    const packageValue = config.PACKAGE_VALUE;
 
     this.logger.debug(`[RECONSUMPTION CHECK] User ${user.id}: totalCommissionReceived=${user.totalCommissionReceived}, threshold=${threshold}`);
 
@@ -647,14 +794,13 @@ export class CommissionService {
     }
 
     // Đã đạt ngưỡng → phải kiểm tra tái tiêu dùng
-    const cycles = Math.floor(user.totalCommissionReceived / threshold);
-    const requiredTotal = cycles * required;
+    // User cần mua hàng với giá trị >= packageValue để tiếp tục nhận hoa hồng
+    // Kiểm tra xem có đơn hàng tái tiêu dùng nào với giá trị >= packageValue sau khi đạt ngưỡng không
+    const hasReconsumed = user.totalReconsumptionAmount >= packageValue;
 
-    const hasEnough = user.totalReconsumptionAmount >= requiredTotal;
+    this.logger.debug(`[RECONSUMPTION CHECK] User ${user.id}: threshold=${threshold}, packageValue=${packageValue}, totalReconsumptionAmount=${user.totalReconsumptionAmount}, hasReconsumed=${hasReconsumed}`);
 
-    this.logger.debug(`[RECONSUMPTION CHECK] User ${user.id}: cycles=${cycles}, required=${requiredTotal}, actual=${user.totalReconsumptionAmount}, hasEnough=${hasEnough}`);
-
-    return hasEnough;
+    return hasReconsumed;
   }
 
   /**
@@ -759,22 +905,31 @@ export class CommissionService {
     userId: string,
     query: { type?: CommissionType; status?: CommissionStatus },
   ): Promise<Commission[]> {
-    const qb = this.commissionRepository.createQueryBuilder('commission')
-      .leftJoinAndSelect('commission.fromUser', 'fromUser')
-      .where('commission.userId = :userId', { userId });
+    // Use find() instead of QueryBuilder to ensure all columns are selected
+    const where: any = { userId };
+    if (query.type) where.type = query.type;
+    if (query.status) where.status = query.status;
 
-    if (query.type) {
-      qb.andWhere('commission.type = :type', { type: query.type });
-    }
-    if (query.status) {
-      qb.andWhere('commission.status = :status', { status: query.status });
-    }
-
-    qb.orderBy('commission.createdAt', 'DESC');
-
-    const commissions = await qb.getMany();
+    const commissions = await this.commissionRepository.find({
+      where,
+      relations: ['fromUser'],
+      order: { createdAt: 'DESC' },
+    });
+    
     // Format decimal numbers to fix floating-point precision issues
-    return formatDecimalsInObject(commissions) as Commission[];
+    // formatDecimalsInObject should preserve Date objects, but let's be safe
+    const formatted = formatDecimalsInObject(commissions) as Commission[];
+    
+    // Ensure createdAt is preserved (formatDecimalsInObject might convert Date to string)
+    formatted.forEach((c, index) => {
+      const original = commissions[index];
+      if (original && original.createdAt) {
+        // Preserve the original Date object
+        (c as any).createdAt = original.createdAt;
+      }
+    });
+    
+    return formatted;
   }
 
   /**
