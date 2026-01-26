@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UserService } from '../user/user.service';
 import { StaffService } from '../staff/staff.service';
@@ -7,7 +7,9 @@ import { CommissionStatus } from '../affiliate/entities/commission.entity';
 import { MilestoneRewardService } from '../admin/milestone-reward.service';
 import { CommissionConfigService } from '../admin/commission-config.service';
 import { PackageType } from '../admin/entities/commission-config.entity';
+import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
 import { LoginDto, RegisterDto, WalletRegisterDto } from './dto';
 
 @Injectable()
@@ -16,6 +18,7 @@ export class AuthService {
     private userService: UserService,
     private staffService: StaffService,
     private jwtService: JwtService,
+    private mailService: MailService,
     @Inject(forwardRef(() => CommissionService))
     private commissionService: CommissionService,
     @Inject(forwardRef(() => MilestoneRewardService))
@@ -217,6 +220,84 @@ export class AuthService {
     };
   }
 
+  async sendVerificationEmail(userId: string) {
+    const user = await this.userService.findOne(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    if (user.emailVerified) {
+      return { message: 'Email already verified' };
+    }
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date();
+    const expiresInMinutes = 10;
+    expiresAt.setMinutes(expiresAt.getMinutes() + expiresInMinutes);
+    await this.userService.setEmailVerificationToken(userId, code, expiresAt);
+
+    const sent = this.mailService.isEnabled() &&
+      (await this.mailService.sendVerificationCode(user.email, code, expiresInMinutes));
+    if (!this.mailService.isEnabled() || !sent) {
+      if (!this.mailService.isEnabled()) {
+        return {
+          message: 'Verification code generated. Configure SMTP to send by email.',
+          code,
+          expiresAt: expiresAt.toISOString(),
+          expiresInMinutes,
+        };
+      }
+      return {
+        message: 'Failed to send email. Please try again or use the code below.',
+        code,
+        expiresAt: expiresAt.toISOString(),
+        expiresInMinutes,
+      };
+    }
+    return {
+      message: 'Verification code sent to your email',
+      expiresAt: expiresAt.toISOString(),
+      expiresInMinutes,
+    };
+  }
+
+  async verifyEmailByCode(userId: string, code: string) {
+    if (!code || code.trim().length !== 6) {
+      throw new BadRequestException('Please enter the 6-digit code');
+    }
+    const user = await this.userService.findOne(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    if (user.emailVerified) {
+      return { message: 'Email already verified' };
+    }
+    const trimmed = code.trim();
+    if (user.emailVerificationToken !== trimmed) {
+      throw new BadRequestException('Invalid verification code');
+    }
+    const now = new Date();
+    if (user.emailVerificationExpiresAt && user.emailVerificationExpiresAt < now) {
+      throw new BadRequestException('Verification code has expired. Please request a new one.');
+    }
+    await this.userService.setEmailVerified(user.id);
+    return { message: 'Email verified successfully', email: user.email };
+  }
+
+  async verifyEmail(token: string) {
+    if (!token || token.trim() === '') {
+      throw new BadRequestException('Token is required');
+    }
+    const user = await this.userService.findByEmailVerificationToken(token.trim());
+    if (!user) {
+      throw new BadRequestException('Invalid or expired verification link');
+    }
+    const now = new Date();
+    if (user.emailVerificationExpiresAt && user.emailVerificationExpiresAt < now) {
+      throw new BadRequestException('Verification link has expired');
+    }
+    await this.userService.setEmailVerified(user.id);
+    return { message: 'Email verified successfully', email: user.email };
+  }
+
   async getMe(user: any) {
     // If it's a staff user, return staff info with permissions
     if (user.type === 'staff' || user.staffId) {
@@ -259,6 +340,7 @@ export class AuthService {
       isSuperAdmin: false,
       type: 'user',
       roles: [],
+      emailVerified: userEntity.emailVerified,
     };
   }
 
@@ -391,6 +473,7 @@ export class AuthService {
       avatar: user.avatar,
       createdAt: user.createdAt,
       id: user.id,
+      emailVerified: user.emailVerified,
     };
   }
 
