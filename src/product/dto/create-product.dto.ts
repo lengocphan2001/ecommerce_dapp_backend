@@ -61,6 +61,15 @@ export class CreateProductDto {
   @IsOptional()
   countries?: ('VIETNAM' | 'USA')[];
 
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  tags?: string[];
+
+  @IsArray()
+  @IsOptional()
+  properties?: { name: string; values: string[] }[];
+
   @IsUUID()
   @IsOptional()
   categoryId?: string;
@@ -88,5 +97,10 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   clothingTypeEn?: string;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  fakeSold?: number;
 }
 
