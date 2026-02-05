@@ -2,6 +2,7 @@ import { DataSource } from 'typeorm';
 import { Commission } from '../src/affiliate/entities/commission.entity';
 import { Order } from '../src/order/entities/order.entity';
 import { User } from '../src/user/entities/user.entity';
+import { Address } from '../src/user/entities/address.entity';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
@@ -17,7 +18,7 @@ const dataSource = new DataSource({
     username: process.env.DB_USERNAME || 'root',
     password: process.env.DB_PASSWORD || 'password', // REPLACE WITH YOUR DB PASSWORD
     database: process.env.DB_NAME || 'ecommerce_dapp',
-    entities: [Commission, Order, User],
+    entities: [Commission, Order, User, Address],
     synchronize: false, // Do not sync schema here
 });
 
