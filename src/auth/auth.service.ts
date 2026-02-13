@@ -372,9 +372,6 @@ export class AuthService {
       return `${intPart}.${decPart}`;
     };
 
-    // Get commission stats (already rounded by CommissionService)
-    const commissionStats = await this.commissionService.getStats(userId);
-
     // Get pending commissions for recent activity
     const pendingCommissions = await this.commissionService.getCommissions(userId, { status: CommissionStatus.PENDING });
     const recentCommissions = await this.commissionService.getCommissions(userId, {});
@@ -428,7 +425,7 @@ export class AuthService {
       return {
         id: c.id,
         type: c.type,
-        amount: formatDecimal(c.amount), // CommissionService already rounds this, but formatDecimal ensures string format
+        amount: formatDecimal(c.amount),
         status: c.status,
         createdAt: createdAtStr,
         fromUserId: c.fromUserId,
@@ -459,11 +456,14 @@ export class AuthService {
       address: user.address,
       treeStats,
       accumulatedPurchases: formatDecimal(user.totalPurchaseAmount),
-      bonusCommission: formatDecimal(commissionStats.totalCommission), // Use calculated and rounded total commission
+      bonusCommission: formatDecimal(user.totalCommissionReceived),
       maxCommission,
       packageType: user.packageType,
       totalReconsumptionAmount: formatDecimal(user.totalReconsumptionAmount),
-      pendingRewards: formatDecimal(commissionStats.pendingCommission), // Use calculated and rounded pending commission
+      pendingRewards: formatDecimal(pendingCommissions.reduce((sum: number, c: any) => {
+        const amount = typeof c.amount === 'string' ? parseFloat(c.amount) : c.amount;
+        return sum + amount;
+      }, 0)),
       recentActivity,
       avatar: user.avatar,
       createdAt: user.createdAt,
