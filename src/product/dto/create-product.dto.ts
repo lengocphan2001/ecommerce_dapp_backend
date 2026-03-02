@@ -109,5 +109,11 @@ export class CreateProductDto {
   @Min(0)
   @Max(100)
   salePercentage?: number;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  @Max(1)
+  directCommissionRate?: number;
 }
 

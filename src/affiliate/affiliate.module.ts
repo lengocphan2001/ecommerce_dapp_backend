@@ -12,10 +12,11 @@ import { BlockchainModule } from '../blockchain/blockchain.module';
 import { AuditLogModule } from '../audit-log/audit-log.module';
 import { AdminModule } from '../admin/admin.module';
 import { PackagesModule } from '../packages/packages.module';
+import { Product } from '../product/entities/product.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Commission, User, Order]),
+    TypeOrmModule.forFeature([Commission, User, Order, Product]),
     BlockchainModule,
     AuditLogModule,
     forwardRef(() => AdminModule),

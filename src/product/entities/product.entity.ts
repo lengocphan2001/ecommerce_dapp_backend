@@ -114,6 +114,18 @@ export class Product {
   @Column({ type: 'int', nullable: true, default: 0 })
   salePercentage?: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 5,
+    scale: 4,
+    nullable: true,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string) => value ? parseFloat(value) : null,
+    },
+  })
+  directCommissionRate?: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

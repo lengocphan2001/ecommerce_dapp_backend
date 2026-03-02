@@ -14,6 +14,7 @@ export enum CommissionType {
   GROUP = 'group', // Hoa hồng nhóm
   MANAGEMENT = 'management', // Hoa hồng quản lý
   MILESTONE = 'milestone', // Thưởng milestone (2, 4, 6 người...)
+  PRODUCT_CASHBACK = 'product_cashback', // Hoàn tiền sản phẩm cho người mua
 }
 
 export enum CommissionStatus {
