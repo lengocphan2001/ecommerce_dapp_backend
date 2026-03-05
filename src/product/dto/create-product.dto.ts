@@ -71,6 +71,10 @@ export class CreateProductDto {
   @IsOptional()
   properties?: { name: string; values: string[] }[];
 
+  @IsArray()
+  @IsOptional()
+  combos?: { quantity: number; price: number; label?: string }[];
+
   @IsUUID()
   @IsOptional()
   categoryId?: string;
@@ -109,11 +113,5 @@ export class CreateProductDto {
   @Min(0)
   @Max(100)
   salePercentage?: number;
-
-  @IsNumber()
-  @IsOptional()
-  @Min(0)
-  @Max(1)
-  directCommissionRate?: number;
 }
 

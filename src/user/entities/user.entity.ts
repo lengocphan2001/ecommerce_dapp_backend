@@ -101,18 +101,6 @@ export class User {
       from: (value: string) => parseFloat(value),
     },
   })
-  bonusCommission: number; // Hoa hồng chờ rút (Bonus)
-
-  @Column({
-    type: 'decimal',
-    precision: 36,
-    scale: 18,
-    default: 0,
-    transformer: {
-      to: (value: number) => value,
-      from: (value: string) => parseFloat(value),
-    },
-  })
   totalReconsumptionAmount: number; // Tổng doanh số tái tiêu dùng
 
   @Column({

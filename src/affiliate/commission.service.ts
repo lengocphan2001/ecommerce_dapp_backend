@@ -11,8 +11,6 @@ import {
 import { PackagesService } from '../packages/packages.service';
 import { Package } from '../packages/entities/package.entity';
 
-import { Product } from '../product/entities/product.entity';
-
 @Injectable()
 export class CommissionService {
   private readonly logger = new Logger(CommissionService.name);
@@ -27,8 +25,6 @@ export class CommissionService {
     private orderRepository: Repository<Order>,
     @InjectRepository(Commission)
     private commissionRepository: Repository<Commission>,
-    @InjectRepository(Product)
-    private productRepository: Repository<Product>,
     private dataSource: DataSource,
     private packagesService: PackagesService,
   ) { }
@@ -123,10 +119,6 @@ export class CommissionService {
       // BƯỚC 1: Tính hoa hồng trực tiếp cho người giới thiệu
       this.logger.log(`Step 1: Calculating direct commission for order ${orderId}`);
       await this.calculateDirectCommission(order, buyer);
-
-      // BƯỚC 1.5: Tính hoàn tiền sản phẩm cho người mua (Product Cashback)
-      this.logger.log(`Step 1.5: Calculating product cashback for order ${orderId}`);
-      await this.calculateProductCashback(order, buyer);
 
       // BƯỚC 2: Tính hoa hồng nhóm (binary tree) - logic cân cặp chuẩn
       // Tính dựa trên volume hiện tại (trước khi cộng volume của đơn hàng này)
@@ -236,15 +228,8 @@ export class CommissionService {
     }
 
     const canReceiveCommission = await this.checkReconsumption(referrer, config);
-    let totalDirectCommission = 0;
-
-    for (const item of order.items) {
-      if (!item.productId) continue;
-      // Trả lại logic cũ: Sử dụng duy nhất hoa hồng trực tiếp của gói (config.directCommissionRate)
-      totalDirectCommission += item.price * item.quantity * config.directCommissionRate;
-    }
-
-    const commissionAmount = this.roundToFirstSignificantDigit(totalDirectCommission);
+    const rawCommissionAmount = order.totalAmount * config.directCommissionRate;
+    const commissionAmount = this.roundToFirstSignificantDigit(rawCommissionAmount);
 
     this.logger.log(`Creating direct commission: referrer ${referrer.id}, buyer ${buyer.id}, amount: ${commissionAmount}, status: ${canReceiveCommission ? 'PENDING' : 'BLOCKED'}`);
 
@@ -256,7 +241,7 @@ export class CommissionService {
         type: CommissionType.DIRECT,
         status: canReceiveCommission ? CommissionStatus.PENDING : CommissionStatus.BLOCKED,
         amount: commissionAmount,
-        orderAmount: order.totalAmount, // Assuming totalAmount is accurately populated
+        orderAmount: order.totalAmount,
         notes: canReceiveCommission ? undefined : 'Blocked: Reconsumption required',
       });
 
@@ -267,66 +252,6 @@ export class CommissionService {
       }
     } catch (error: any) {
       this.logger.error(`Error creating direct commission for referrer ${referrer.id}, buyer ${buyer.id}:`, error.stack || error.message);
-      throw error;
-    }
-  }
-
-  /**
-   * Tính hoàn tiền sản phẩm (Product Cashback) cho người mua
-   */
-  private async calculateProductCashback(
-    order: Order,
-    buyer: User,
-  ): Promise<void> {
-    if (!order.items || order.items.length === 0) {
-      return;
-    }
-
-    this.logger.log(`Calculating product cashback for buyer ${buyer.id}`);
-
-    let totalCashback = 0;
-    for (const item of order.items) {
-      if (!item.productId) continue;
-      const product = await this.productRepository.findOne({ where: { id: item.productId } });
-      if (product && product.directCommissionRate && product.directCommissionRate > 0) {
-        totalCashback += item.price * item.quantity * product.directCommissionRate;
-      }
-    }
-
-    if (totalCashback <= 0) {
-      this.logger.debug(`No product cashback for buyer ${buyer.id}`);
-      return;
-    }
-
-    const cashbackAmount = this.roundToFirstSignificantDigit(totalCashback);
-
-    this.logger.log(`Creating product cashback: buyer ${buyer.id}, amount: ${cashbackAmount}, status: PENDING`);
-
-    try {
-      const commission = this.commissionRepository.create({
-        userId: buyer.id,  // Tiền trả về cho thẻ tự mua
-        orderId: order.id,
-        fromUserId: buyer.id, // Vẫn ghi nguồn từ chính đơn tự mua
-        type: CommissionType.PRODUCT_CASHBACK,
-        status: CommissionStatus.PENDING, // Mặc định là PENDING, không ràng buộc tái tiêu dùng cho cashback
-        amount: cashbackAmount,
-        orderAmount: order.totalAmount,
-        notes: `Hoa hồng hoàn tiền sản phẩm`,
-      });
-
-      await this.commissionRepository.save(commission);
-
-      // Cộng tiền thẳng vào bonusCommission của người mua
-      // Reload buyer to get latest bonusCommission
-      const freshBuyer = await this.userRepository.findOne({ where: { id: buyer.id } });
-      if (freshBuyer) {
-        freshBuyer.bonusCommission = Number(freshBuyer.bonusCommission || 0) + Number(cashbackAmount);
-        await this.userRepository.save(freshBuyer);
-      }
-
-      this.logger.log(`Product cashback saved successfully`);
-    } catch (error) {
-      this.logger.error(`Failed to save product cashback:`, error);
       throw error;
     }
   }

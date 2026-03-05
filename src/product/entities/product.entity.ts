@@ -76,6 +76,11 @@ export class Product {
   @Column({ type: 'simple-json', nullable: true })
   properties?: { name: string; values: string[] }[];
 
+  // Product combos — preset quantity bundles with a special price
+  // Structure: [{ quantity: 3, price: 25.00, label: 'Mua 3 giảm còn $25' }]
+  @Column({ type: 'simple-json', nullable: true })
+  combos?: { quantity: number; price: number; label?: string }[];
+
   @Column({ nullable: true })
   categoryId?: string;
 
@@ -113,18 +118,6 @@ export class Product {
 
   @Column({ type: 'int', nullable: true, default: 0 })
   salePercentage?: number;
-
-  @Column({
-    type: 'decimal',
-    precision: 5,
-    scale: 4,
-    nullable: true,
-    transformer: {
-      to: (value: number) => value,
-      from: (value: string) => value ? parseFloat(value) : null,
-    },
-  })
-  directCommissionRate?: number;
 
   @CreateDateColumn()
   createdAt: Date;

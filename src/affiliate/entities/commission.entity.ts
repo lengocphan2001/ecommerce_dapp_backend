@@ -14,7 +14,6 @@ export enum CommissionType {
   GROUP = 'group', // Hoa hồng nhóm
   MANAGEMENT = 'management', // Hoa hồng quản lý
   MILESTONE = 'milestone', // Thưởng milestone (2, 4, 6 người...)
-  PRODUCT_CASHBACK = 'product_cashback', // Hoàn tiền sản phẩm cho người mua
 }
 
 export enum CommissionStatus {
@@ -49,11 +48,8 @@ export class Commission {
   @JoinColumn({ name: 'fromUserId' })
   fromUser: User;
 
-  @Column({
-    type: 'enum',
-    enum: CommissionType,
-  })
-  type: CommissionType;
+  @Column({ type: 'varchar', length: 32 })
+  type: CommissionType; // Stored as string to avoid ALTER enum truncating existing rows (e.g. legacy 'binary' etc.)
 
   @Column({
     type: 'enum',
