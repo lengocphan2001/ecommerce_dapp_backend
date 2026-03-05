@@ -21,6 +21,7 @@ import { Commission } from '../src/affiliate/entities/commission.entity';
 import { AuditLog } from '../src/audit-log/entities/audit-log.entity';
 import { MilestoneRewardConfig } from '../src/admin/entities/milestone-reward-config.entity';
 import { UserMilestone } from '../src/admin/entities/user-milestone.entity';
+import { BankingConfig } from '../src/admin/entities/banking-config.entity';
 import { Staff } from '../src/staff/entities/staff.entity';
 import { StaffSession } from '../src/staff/entities/staff-session.entity';
 import { Role } from '../src/role/entities/role.entity';
@@ -58,7 +59,7 @@ async function initializeDatabase() {
 
   const dataSource = new DataSource({
     ...dbConfig,
-    entities: [User, Address, Category, Slider, Product, Order, Commission, AuditLog, MilestoneRewardConfig, UserMilestone, Staff, StaffSession, Role, Permission, Package, Kyc],
+    entities: [User, Address, Category, Slider, Product, Order, Commission, AuditLog, MilestoneRewardConfig, UserMilestone, BankingConfig, Staff, StaffSession, Role, Permission, Package, Kyc],
     synchronize: true, // Enable synchronize to create tables
     logging: true,
   });
