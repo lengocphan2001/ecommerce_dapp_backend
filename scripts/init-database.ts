@@ -27,6 +27,7 @@ import { StaffSession } from '../src/staff/entities/staff-session.entity';
 import { Role } from '../src/role/entities/role.entity';
 import { Permission } from '../src/permission/entities/permission.entity';
 import { Package } from '../src/packages/entities/package.entity';
+import { PackagePurchase } from '../src/packages/entities/package-purchase.entity';
 import { Kyc } from '../src/kyc/entities/kyc.entity';
 
 // Load environment variables from .env file
@@ -59,7 +60,7 @@ async function initializeDatabase() {
 
   const dataSource = new DataSource({
     ...dbConfig,
-    entities: [User, Address, Category, Slider, Product, Order, Commission, AuditLog, MilestoneRewardConfig, UserMilestone, BankingConfig, Staff, StaffSession, Role, Permission, Package, Kyc],
+    entities: [User, Address, Category, Slider, Product, Order, Commission, AuditLog, MilestoneRewardConfig, UserMilestone, BankingConfig, Staff, StaffSession, Role, Permission, Package, PackagePurchase, Kyc],
     synchronize: true, // Enable synchronize to create tables
     logging: true,
   });
